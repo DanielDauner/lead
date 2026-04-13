@@ -127,7 +127,7 @@ class BaseConfig:
             TargetDataset.CARLA_LEADERBOARD2_6CAMERAS: 6,
             TargetDataset.CARLA_LEADERBOARD2_3CAMERAS: 3,
             TargetDataset.CARLA_LEADERBOARD2_1CAMERA: 1,
-            TargetDataset.CARLA_PY123D_1CAMERA: 1,
+            TargetDataset.CARLA_PY123D_6CAMERAS: 6,
             TargetDataset.NAVSIM_4CAMERAS: 4,
             TargetDataset.WAYMO_E2E_2025_3CAMERAS: 3,
         }[self.target_dataset]
@@ -224,16 +224,63 @@ class BaseConfig:
                     "fov": 110,
                 }
             }
-        elif self.target_dataset == TargetDataset.CARLA_PY123D_1CAMERA:
+        elif self.target_dataset == TargetDataset.CARLA_PY123D_6CAMERAS:
+            # NOTE: Use six cameras inspired by nuScenes rig.
             return {
+                # CAM_FRONT
                 1: {
-                    "pos": [-1.5, 0.0, 2.0],
+                    "pos": [0.32, 0.0, 1.6],
                     "rot": [0.0, 0.0, 0.0],
-                    "width": 1024,
-                    "height": 512,
-                    "cropped_height": 512,
-                    "fov": 110,
-                }
+                    "width": 1600,
+                    "height": 900,
+                    "cropped_height": 900,
+                    "fov": 65,
+                },
+                # CAM_FRONT_LEFT
+                2: {
+                    "pos": [0.15, -0.49, 1.6],
+                    "rot": [0.0, 0.0, -55.0],
+                    "width": 1600,
+                    "height": 900,
+                    "cropped_height": 900,
+                    "fov": 65,
+                },
+                # CAM_BACK_LEFT
+                3: {
+                    "pos": [-0.35, -0.48, 1.6],
+                    "rot": [0.0, 0.0, -110.0],
+                    "width": 1600,
+                    "height": 900,
+                    "cropped_height": 900,
+                    "fov": 65,
+                },
+                # CAM_FRONT_RIGHT
+                4: {
+                    "pos": [0.15, 0.49, 1.6],
+                    "rot": [0.0, 0.0, 55.0],
+                    "width": 1600,
+                    "height": 900,
+                    "cropped_height": 900,
+                    "fov": 65,
+                },
+                # CAM_BACK_RIGHT
+                5: {
+                    "pos": [-0.35, 0.48, 1.6],
+                    "rot": [0.0, 0.0, 110.0],
+                    "width": 1600,
+                    "height": 900,
+                    "cropped_height": 900,
+                    "fov": 65,
+                },
+                # CAM_BACK
+                6: {
+                    "pos": [-1.36, 0.0, 1.6],
+                    "rot": [0.0, 0.0, -180.0],
+                    "width": 1600,
+                    "height": 900,
+                    "cropped_height": 900,
+                    "fov": 90,
+                },
             }
         elif self.target_dataset == TargetDataset.NAVSIM_4CAMERAS:
             return {
