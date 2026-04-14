@@ -62,6 +62,15 @@ LOG = logging.getLogger(__name__)
 def get_entry_point() -> str:
     return "ExpertPy123D"
 
+CAMERA_ID_MAPPING = {
+    1: CameraID.PCAM_F0,
+    2: CameraID.PCAM_L0,
+    3: CameraID.PCAM_L1,
+    4: CameraID.PCAM_R0,
+    5: CameraID.PCAM_R1,
+    6: CameraID.PCAM_B0,
+}
+
 
 class ExpertPy123D(Expert):
     """Expert agent with Py123D data logging.
@@ -225,7 +234,7 @@ class ExpertPy123D(Expert):
         LOG.info(f"Log output directory: {self._py123d_logs_root.absolute()}")
 
         # Store camera/lidar metadata for use in extraction methods
-        self._camera_metadata = self._get_py123d_camera_metadata()
+        self._camera_metadatas = self._get_py123d_camera_metadata()
         self._lidar_metadata = self._get_py123d_lidar_metadata()
 
         # Create log metadata (sensor metadata is now per-modality, not in LogMetadata)
@@ -251,44 +260,48 @@ class ExpertPy123D(Expert):
         )
 
     @beartype
-    def _get_py123d_camera_metadata(self) -> PinholeCameraMetadata:
+    def _get_py123d_camera_metadata(self) -> dict[CameraID, PinholeCameraMetadata]:
         """Get camera metadata for Py123D from CARLA camera configuration.
 
         Returns:
-            PinholeCameraMetadata for the front camera.
+            A dictionary mapping camera IDs to their metadata.
         """
-        camera_id = CameraID.PCAM_F0
 
-        # Calculate intrinsics from CARLA camera parameters
-        width = self.config_expert.camera_calibration[1]["width"]
-        height = self.config_expert.camera_calibration[1]["height"]
-        fov = self.config_expert.camera_calibration[1]["fov"]
+        camera_metadatas = {}
+        for cam_key, camera_id in CAMERA_ID_MAPPING.items():
 
-        # https://github.com/carla-simulator/carla/issues/56
-        focal_length = width / (2.0 * np.tan(fov * np.pi / 360.0))
-        cx = width / 2.0
-        cy = height / 2.0
 
-        intrinsics = PinholeIntrinsics(fx=focal_length, fy=focal_length, cx=cx, cy=cy)
+            # Calculate intrinsics from CARLA camera parameters
+            width = self.config_expert.camera_calibration[cam_key]["width"]
+            height = self.config_expert.camera_calibration[cam_key]["height"]
+            fov = self.config_expert.camera_calibration[cam_key]["fov"]
 
-        # Get camera extrinsic relative to IMU (rear axle)
-        camera_pos = self.config_expert.camera_calibration[1]["pos"]
-        camera_rot = self.config_expert.camera_calibration[1]["rot"]
-        camera_to_imu_se3 = expert_py123d_utils.get_camera_extrinsic_as_iso(
-            camera_pos=camera_pos,
-            camera_rot=camera_rot,
-            ego_metadata=self._ego_metadata,
-        )
+            # https://github.com/carla-simulator/carla/issues/56
+            focal_length = width / (2.0 * np.tan(fov * np.pi / 360.0))
+            cx = width / 2.0
+            cy = height / 2.0
 
-        return PinholeCameraMetadata(
-            camera_name=str(camera_id),
-            camera_id=camera_id,
-            intrinsics=intrinsics,
-            distortion=None,
-            width=width,
-            height=height,
-            camera_to_imu_se3=camera_to_imu_se3,
-        )
+            intrinsics = PinholeIntrinsics(fx=focal_length, fy=focal_length, cx=cx, cy=cy)
+
+            # Get camera extrinsic relative to IMU (rear axle)
+            camera_pos = self.config_expert.camera_calibration[cam_key]["pos"]
+            camera_rot = self.config_expert.camera_calibration[cam_key]["rot"]
+            camera_to_imu_se3 = expert_py123d_utils.get_camera_extrinsic_as_iso(
+                camera_pos=camera_pos,
+                camera_rot=camera_rot,
+                ego_metadata=self._ego_metadata,
+            )
+            camera_metadatas[camera_id] = PinholeCameraMetadata(
+                camera_name=str(camera_id),
+                camera_id=camera_id,
+                intrinsics=intrinsics,
+                distortion=None,
+                width=width,
+                height=height,
+                camera_to_imu_se3=camera_to_imu_se3,
+                is_undistorted=True,
+            )
+        return camera_metadatas
 
     @beartype
     def _get_py123d_lidar_metadata(self) -> LidarMetadata:
@@ -389,9 +402,9 @@ class ExpertPy123D(Expert):
             modalities.append(box_detections)
 
         # Convert camera data (needs ego state for world-space extrinsic)
-        camera = self._extract_py123d_camera_data(input_data, ts, ego_state)
-        LOG.debug("Extracted camera frame")
-        modalities.append(camera)
+        cameras = self._extract_py123d_camera_data(input_data, ts, ego_state)
+        LOG.debug(f"Extracted {len(cameras)} camera frames")
+        modalities.extend(cameras)
 
         # Convert LiDAR data
         lidar = self._extract_py123d_lidar_data(ts)
@@ -400,8 +413,9 @@ class ExpertPy123D(Expert):
             modalities.append(lidar)
 
         # Traffic light detections
-        traffic_lights = self._extract_py123d_traffic_lights(ts)
-        modalities.append(traffic_lights)
+        # FIXME @DanielDauner: Temporarily disabling. Can fix it in the future.
+        # traffic_lights = self._extract_py123d_traffic_lights(ts)
+        # modalities.append(traffic_lights) 
 
         return ModalitiesSync(timestamp=ts, modalities=modalities)
 
@@ -522,7 +536,7 @@ class ExpertPy123D(Expert):
                     bb["class"] == "static"
                     and "mesh_path" in bb
                     and bb["mesh_path"] is not None
-                    and "Car" in bb["mesh_path"]
+                    and "/Car/" in bb["mesh_path"]
                 ):
                     box_detections.append(
                         BoxDetectionSE3(
@@ -596,7 +610,7 @@ class ExpertPy123D(Expert):
     @beartype
     def _extract_py123d_camera_data(
         self, input_data: dict, timestamp: Timestamp, ego_state: EgoStateSE3
-    ) -> Camera:
+    ) -> list[Camera]:
         """Extract camera data from LEAD's input_data.
 
         Args:
@@ -605,28 +619,35 @@ class ExpertPy123D(Expert):
             ego_state: Ego state for composing camera extrinsic in global frame.
 
         Returns:
-            Camera with RGB image.
+            List of Camera objects with RGB images.
         """
-        # Get RGB image from LEAD (CARLA provides BGRA, convert to RGB)
-        bgra_image = (
-            input_data["rgb_1"][1]
-            if isinstance(input_data["rgb_1"], tuple)
-            else input_data["rgb_1"]
-        )
-        rgb_image = bgra_image[:, :, :3][:, :, ::-1].copy()
+        cameras = []
+        for cam_key, camera_id in CAMERA_ID_MAPPING.items():
+            # Get RGB image from LEAD (CARLA provides BGRA, convert to RGB)
+            bgra_image = (
+                input_data[f"rgb_{cam_key}"][1]
+                if isinstance(input_data[f"rgb_{cam_key}"], tuple)
+                else input_data[f"rgb_{cam_key}"]
+            )
+            rgb_image = bgra_image[:, :, :3][:, :, ::-1].copy()
 
-        # Compose camera-to-global: imu_to_global @ camera_to_imu
-        camera_to_global = rel_to_abs_se3(
-            origin=ego_state.imu_se3,
-            pose_se3=self._camera_metadata.camera_to_imu_se3,
-        )
+            camera_metadata = self._camera_metadatas[camera_id]
 
-        return Camera(
-            metadata=self._camera_metadata,
-            image=rgb_image,
-            camera_to_global_se3=camera_to_global,
-            timestamp=timestamp,
-        )
+            # Compose camera-to-global: imu_to_global @ camera_to_imu
+            camera_to_global = rel_to_abs_se3(
+                origin=ego_state.imu_se3,
+                pose_se3=camera_metadata.camera_to_imu_se3,
+            )
+
+            cameras.append(
+                Camera(
+                    metadata=camera_metadata,
+                    image=rgb_image,
+                    camera_to_global_se3=camera_to_global,
+                    timestamp=timestamp,
+                )
+            )
+        return cameras
 
     @beartype
     def _extract_py123d_traffic_lights(
@@ -681,7 +702,7 @@ class ExpertPy123D(Expert):
         # Convert to ISO 8855: invert Y, shift X by rear axle offset, adjust Z
         lidar_pc[:, 1] = -lidar_pc[:, 1]  # Y
         lidar_pc[:, 0] += self._ego_metadata.rear_axle_to_center_longitudinal  # X
-        lidar_pc[:, 2] += self.config_expert.lidar_pos_1[-1] / 2  # Z
+        lidar_pc[:, 2] += self.config_expert.lidar_pos_1[-1] / 2  - self._ego_metadata.rear_axle_to_center_vertical # Z
 
         # Split into xyz (Nx3) and features
         point_cloud_3d = lidar_pc[:, :3].astype(np.float32)
