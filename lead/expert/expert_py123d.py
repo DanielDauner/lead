@@ -72,11 +72,11 @@ CAMERA_ID_MAPPING = {
     6: CameraID.PCAM_B0,
 }
 
-# Maximum ego→TL center distance for which we log a traffic light detection.
+# Max ego-to-waypoint distance (m) for logging a TL detection.
 TRAFFIC_LIGHT_LOG_RADIUS_M: float = 80.0
 
-# Maximum distance from lane centerline for matching a traffic-light stop-line waypoint to a lane.
-LANE_START_MATCH_THRESHOLD_M: float = 0.1
+# Max distance (m) from a TL waypoint to a 123D lane centerline for a match.
+LANE_CENTERLINE_MATCH_THRESHOLD_M: float = 0.1
 
 
 class ExpertPy123D(Expert):
@@ -677,10 +677,10 @@ class ExpertPy123D(Expert):
     ) -> TrafficLightDetections:
         """Extract traffic light detections from CARLA.
 
-        Iterates all CARLA traffic lights within ``TRAFFIC_LIGHT_LOG_RADIUS_M`` of
-        the ego, queries the 123D map for candidate lanes at each stop-line
-        waypoint, and keeps only matches whose lane centerline starts within
-        ``LANE_START_MATCH_THRESHOLD_M`` of the waypoint.
+        For each CARLA TL, take its affected-lane waypoints, keep those within
+        ``TRAFFIC_LIGHT_LOG_RADIUS_M`` of the ego, query the 123D map, and emit
+        one detection per lane whose centerline runs within
+        ``LANE_CENTERLINE_MATCH_THRESHOLD_M`` of the waypoint.
 
         Args:
             timestamp: Current simulation timestamp.
@@ -694,10 +694,9 @@ class ExpertPy123D(Expert):
 
         ego_loc = self.ego_location
 
-        # Pull TL actors straight from CARLA. For each, use
-        # `get_stop_waypoints()` to get one waypoint per governed lane, sitting
-        # exactly on the stop line — i.e. on the START of the 123D lane that
-        # begins inside the intersection.
+        # One query point per affected-lane waypoint (CARLA: +y right → 123D /
+        # ISO 8855: +y left, hence the y negation). Filter is per-waypoint so
+        # only lanes near the ego are logged, even at wide intersections.
         query_points: list[geom.Point] = []
         point_status: list[TrafficLightStatus] = []
         lights_in_radius = 0
@@ -723,26 +722,22 @@ class ExpertPy123D(Expert):
             )
             return TrafficLightDetections(detections=[], timestamp=timestamp)
 
-        # One batched map query for all waypoints across all in-radius lights.
-        # Use dwithin with a small buffer (not "intersects") because the trigger
-        # volume center sits on the stop line, i.e. exactly on the lane polygon
-        # boundary — a strict point-in-polygon test misses by a few cm.
+        # Single batched map call. `dwithin` (not `intersects`) absorbs sub-cm
+        # noise on polygon edges; same threshold reused as the centerline filter.
         result = self._py123d_map_api.query_object_ids(
             query_points,
             [MapLayer.LANE],
             predicate="dwithin",
-            distance=LANE_START_MATCH_THRESHOLD_M,
+            distance=LANE_CENTERLINE_MATCH_THRESHOLD_M,
         )
 
         lane_dict = typing.cast(
             dict[int, list[int]], result.get(MapLayer.LANE, {})
         )
 
-        # Strict match: query point must be near the lane's centerline START
-        # (the lane begins at the stop line, i.e. the intersection lane).
-        # Matching against the END too would also accept the predecessor
-        # (approach) lane and any successor whose start happens to be nearby.
-        # Enforce one status per lane: keep the first, warn on any conflict.
+        # Reject candidates whose centerline doesn't actually pass near the
+        # waypoint (the polygon query can grab adjacent/overlapping lanes).
+        # One status per lane: first match wins; conflicts are warned and dropped.
         lane_status: dict[int, TrafficLightStatus] = {}
         rejected = 0
         for point_idx, lane_ids in lane_dict.items():
@@ -756,7 +751,7 @@ class ExpertPy123D(Expert):
                     rejected += 1
                     continue
                 min_distance = lane.centerline.linestring.distance(qp)
-                if min_distance > LANE_START_MATCH_THRESHOLD_M:
+                if min_distance > LANE_CENTERLINE_MATCH_THRESHOLD_M:
                     rejected += 1
                     continue
                 existing = lane_status.get(lane_id)
