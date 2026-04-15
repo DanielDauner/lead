@@ -433,7 +433,7 @@ class ExpertPy123D(Expert):
         box_detections = self._extract_py123d_box_detections(input_data, ts)
         LOG.debug(f"Extracted {len(box_detections.box_detections)} bounding boxes")
         modalities.append(
-            box_detections
+            box_detections,
         )  # NOTE: We also write the modality if no boxes are found.
 
         # Convert camera data (needs ego state for world-space extrinsic)
